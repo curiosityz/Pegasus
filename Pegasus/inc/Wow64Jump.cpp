@@ -7,6 +7,7 @@
 */
 
 #include <Windows.h>
+#include <stdexcept> // for std::runtime_error
 
 #include "dbg.h"
 #include "mem.h"

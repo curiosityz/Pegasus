@@ -45,6 +45,10 @@ VOID RndClass_imports(RndClass_ptrs *apis)
 // fill all the values of passed struct
 BOOL rgNew(RndClass *rg)
 {
+	if (rg == NULL) {
+		DbgPrint("Error: rg is NULL");
+		return FALSE;
+	}
 
 	// check if it is already initialized
 	if (rg->lStrucLen != sizeof(RndClass)) {
@@ -66,13 +70,12 @@ BOOL rgNew(RndClass *rg)
 		// report we have done initialization
 		return TRUE;
 
-	}	else {
+	} else {
 
 		// struct seems to be already initialized
 		return FALSE;
 
 	}	// init check
-
 }
 
 
@@ -105,23 +108,25 @@ VOID rgInitSeedFromTime(RndClass *rg)
 // It uses George Marsaglia's MWC algorithm to produce an unsigned integer
 DWORD rgGetRndDWORD(RndClass *rg)
 {
-    rg->m_z = 36969 * (rg->m_z & 65535) + (rg->m_z >> 16);
-    rg->m_w = 18000 * (rg->m_w & 65535) + (rg->m_w >> 16);
-	//DbgPrint("a=%08Xh (%u) b=%08Xh (%u) ", (rg->m_z & 65535), (rg->m_z & 65535), (36969 * (rg->m_z & 65535)), (36969 * (rg->m_z & 65535)));
-    return (rg->m_z << 16) + rg->m_w;
+	std::random_device rd;
+	std::mt19937 gen(rd());
+	std::uniform_int_distribution<DWORD> dis(0, MAXDWORD);
+	return dis(gen);
 }
 
 // returns random number in range [dwMin, dwMax]
 DWORD rgGetRnd(RndClass *rg, DWORD dwMin, DWORD dwMax)
 {
-		double dRes;	// to avoid too aggressive compiler optimizations (double->dword inside of calculations)
+	double dRes;	// to avoid too aggressive compiler optimizations (double->dword inside of calculations)
 
-// calculate with no matter what is bigger
-if (dwMin>dwMax) { dRes = dwMax+((dwMin-dwMax+1)*(rg->rgGetRndDWORD(rg)/(MAXDWORD+1.0)));  }
-			else { dRes = dwMin+((dwMax-dwMin+1)*(rg->rgGetRndDWORD(rg)/(MAXDWORD+1.0)));  } 
+	// calculate with no matter what is bigger
+	if (dwMin>dwMax) { 
+		dRes = dwMax+((dwMin-dwMax+1)*(rg->rgGetRndDWORD(rg)/(MAXDWORD+1.0)));  
+	} else { 
+		dRes = dwMin+((dwMax-dwMin+1)*(rg->rgGetRndDWORD(rg)/(MAXDWORD+1.0)));  
+	} 
 
-return (DWORD)dRes;
-
+	return (DWORD)dRes;
 }
 
 #endif

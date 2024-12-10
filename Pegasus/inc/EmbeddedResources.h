@@ -13,14 +13,14 @@ typedef enum RES_TYPE {
 	RES_TYPE_SHELLCODE,	// binpack's headering shellcode to perform startup 
 	RES_TYPE_MODULE,	// generic module, multiple items
 	RES_TYPE_KBRI_HD	// KBRI module's hook dll
-};
+} RES_TYPE;
 
 // architecture of remote machine / resource
 typedef enum ARCH_TYPE {
 	ARCH_TYPE_UNKNOWN = 0,
 	ARCH_TYPE_X32,
 	ARCH_TYPE_X64
-};
+} ARCH_TYPE;
 
 // same descriptor as EMBEDDEDRESOURCE, but for a serialized storage (heading binary itself)
 #pragma pack(push)

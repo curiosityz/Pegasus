@@ -10,8 +10,6 @@
 
 #include "MyStreams.h"
 
-
-
 /*
 	deinit and free stream object
 */

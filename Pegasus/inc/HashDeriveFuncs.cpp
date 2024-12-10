@@ -5,6 +5,9 @@
 */
 
 #include <Windows.h>
+#include <string>
+#include <vector>
+#include <stdexcept>
 
 #include "dbg.h"
 #include "mem.h"
@@ -23,37 +26,37 @@ LPWSTR g_wszLocalMachineName = NULL;
 UINT64 i64CalcTargetMachineHash(LPWSTR wszTargetMachineName)
 {
 	DWORD dwLen;	// tmp len var
-	LPWSTR wszResBuff, wszS;
+	std::wstring wszResBuff;
 	UINT64 i64Res = 0;	// func result
 
-	do {	// not a loop
-
+	try {
 		// directly hash if used passed param
-		if (wszTargetMachineName) { i64Res = HashStringW_const(wszTargetMachineName); break; }
+		if (wszTargetMachineName) { 
+			i64Res = HashStringW_const(wszTargetMachineName); 
+			return i64Res; 
+		}
 
 		// need to query local machine's name
 		if (!g_wszLocalMachineName) {
-
 			g_wszLocalMachineName = (LPWSTR)my_alloc(1024);
 			dwLen = MAX_COMPUTERNAME_LENGTH + 1;
-			GetComputerName(g_wszLocalMachineName, &dwLen);
-
-		} // !g_wszLocalMachineName
+			if (!GetComputerName(g_wszLocalMachineName, &dwLen)) {
+				throw std::runtime_error("Failed to get computer name");
+			}
+		}
 
 		// form resulting buffer
-		wszResBuff = (LPWSTR)my_alloc(1024);
-		wszS = CRSTRW("\\\\", "\x00\x20\xdc\x0d\x02\x20\xe0\x39\xd8\xa4\xd2");
-		lstrcat(wszResBuff, wszS);
-		lstrcat(wszResBuff, g_wszLocalMachineName);
-		my_free(wszS);
+		wszResBuff = L"\\\\";
+		wszResBuff += g_wszLocalMachineName;
 
 		// calc hash
-		i64Res = HashStringW_const(wszResBuff);
-		DbgPrint("formatted local machine name [%ws], hash %08X%08X", wszResBuff, (DWORD)(i64Res << 32), (DWORD)i64Res);
-		my_free(wszResBuff);
+		i64Res = HashStringW_const(wszResBuff.c_str());
+		DbgPrint("formatted local machine name [%ws], hash %08X%08X", wszResBuff.c_str(), (DWORD)(i64Res << 32), (DWORD)i64Res);
 
-	} while (FALSE);	// not a loop
+	} catch (const std::exception& e) {
+		DbgPrint("Exception: %s", e.what());
+		throw;
+	}
 
-	
 	return i64Res;
 }
