@@ -10,7 +10,7 @@
 
 #ifdef ROUTINES_BY_PTR
 
-DataCallbackManager_ptrs DataCallbackManager_apis;    // global var for transparent name translation into call-by-pointer    
+    DataCallbackManager_ptrs DataCallbackManager_apis;    // global var for transparent name translation into call-by-pointer    
 
 // should be called before any other apis used to fill internal structures
 VOID DataCallbackManager_resolve(DataCallbackManager_ptrs *apis)
@@ -27,6 +27,8 @@ VOID DataCallbackManager_resolve(DataCallbackManager_ptrs *apis)
 #include "mem.h"
 #include "dbg.h"
 
+DCM_WORK_STRUCTURE g_dcm;    // global structure used internally    
+
 /*
     Fill passed structure with ptrs to all exported functions
     Used when module compiled as code to provide ptrs to some other child code
@@ -42,8 +44,6 @@ VOID DataCallbackManager_imports(DataCallbackManager_ptrs *apis)
     apis->fndcmDoEnum = dcmDoEnum;
     apis->fndcmGetServerCallback = dcmGetServerCallback;
 }
-
-DCM_WORK_STRUCTURE g_dcm;    // global structure used internally    
 
 /*
     Performs init of internal structures

@@ -1,7 +1,7 @@
 <?php
-/**
- * Parses bck logs to get balance briefs
- */
+/*
+    Parses bck logs to get balance briefs
+*/
 
 /**
  * Returns value identified by $val_name by searching $data for ValName="value"
@@ -10,7 +10,7 @@
  * @param string $val_name
  * @return string
  */
-function getVal($data, $val_name)
+function GetVal($data, $val_name)
 {
     $pattern = '/'.$val_name.'="([^"]*)"/';
     preg_match($pattern, $data, $matches);
@@ -23,41 +23,36 @@ function getVal($data, $val_name)
  * @param int $val
  * @return string
  */
-function formatValue($val)
+function fmt($val)
 {
-    return round($val / 100 / 1000 / 1000, 2) . 'M';
+    return round($val / 100 / 1000 / 1000, 2).'M';
 }
 
 /**
- * Parses file contents specified by file pointer
+ * Parses file contents, specified by file pointer
  *
- * @param string $data
+ * @param resource $fp
  * @param array $context
  */
-function parseFileContents($data, &$context)
+function ParseFileContentsByFP($fp, &$context)
 {
-    // Check for interested patterns
-    if (strpos($data, '<ED211') !== false) {
-        $stamp = getVal($data, 'LastMovetDate') . " " . getVal($data, 'EndTime');
-        echo $stamp . " " . formatValue(getVal($data, 'EnterBal')) . " -> " . formatValue(getVal($data, 'OutBal')) . "<br>";
+    // read all file's contents into var
+    $data = stream_get_contents($fp);
 
-        if (!isset($context[getVal($data, 'LastMovetDate')]['min'])) {
-            $context[getVal($data, 'LastMovetDate')]['min'] = getVal($data, 'EnterBal');
+    // check for interested patterns
+    if (strpos($data, '<ED211') !== FALSE) {
+        $stamp = GetVal($data, 'LastMovetDate')." ".GetVal($data, 'EndTime');
+        echo $stamp." ".fmt(GetVal($data, 'EnterBal'))." -> ".fmt(GetVal($data, 'OutBal'))."<br>";
+
+        if ($context[GetVal($data, 'LastMovetDate')]['min'] == 0) {
+            $context[GetVal($data, 'LastMovetDate')]['min'] = GetVal($data, 'EnterBal');
         }
-        if (!isset($context[getVal($data, 'LastMovetDate')]['max'])) {
-            $context[getVal($data, 'LastMovetDate')]['max'] = getVal($data, 'EnterBal');
+        if ($context[GetVal($data, 'LastMovetDate')]['max'] == 0) {
+            $context[GetVal($data, 'LastMovetDate')]['max'] = GetVal($data, 'EnterBal');
         }
 
-        $context[getVal($data, 'LastMovetDate')]['min'] = min(
-            $context[getVal($data, 'LastMovetDate')]['min'],
-            getVal($data, 'EnterBal'),
-            getVal($data, 'OutBal')
-        );
-        $context[getVal($data, 'LastMovetDate')]['max'] = max(
-            $context[getVal($data, 'LastMovetDate')]['max'],
-            getVal($data, 'EnterBal'),
-            getVal($data, 'OutBal')
-        );
+        $context[GetVal($data, 'LastMovetDate')]['min'] = min($context[GetVal($data, 'LastMovetDate')]['min'], GetVal($data, 'EnterBal'), GetVal($data, 'OutBal'));
+        $context[GetVal($data, 'LastMovetDate')]['max'] = max($context[GetVal($data, 'LastMovetDate')]['max'], GetVal($data, 'EnterBal'), GetVal($data, 'OutBal'));
     }
 }
 
@@ -67,39 +62,39 @@ function parseFileContents($data, &$context)
  * @param string $fname
  * @param array $context
  */
-function parseZip($fname, &$context)
+function ParseZip($fname, &$context)
 {
+    // enum all files in that zip
     $zip = new ZipArchive;
-
-    // Open the archive
-    if ($zip->open($fname) === true) {
-        // Iterate the archive files array and display the filename of each one
+    // open the archive
+    if ($zip->open($fname) === TRUE) {
+        // iterate the archive files array and display the filename or each one
         for ($i = 0; $i < $zip->numFiles; $i++) {
-            // Read file contents into memory
-            $data = $zip->getFromIndex($i);
-
-            // Parse contents
-            if ($data !== false) {
-                parseFileContents($data, $context);
+            // read file contents into memory
+            $fp = $zip->getStream($zip->getNameIndex($i));
+            // parse contents by file pointer
+            if ($fp) {
+                ParseFileContentsByFP($fp, $context);
+                fclose($fp);
             }
         }
     } else {
         echo "Failed to open {$fname}";
     }
-
     $zip->close();
 }
 
 set_time_limit(600);
 
-// Results array context
-$context = [];
+// results array context
+$context = array();
 
 foreach (glob("./bck_logs/*/*.zip") as $fname) {
-    parseZip($fname, $context);
+    ParseZip($fname, $context);
 }
 
 echo "<br><hr>";
 foreach ($context as $key => $val) {
-    echo $key . " -> " . formatValue($val['min']) . " - " . formatValue($val['max']) . "<br>";
+    echo $key." -> ".fmt($val['min'])." - ".fmt($val['max'])."<br>";
 }
+?>

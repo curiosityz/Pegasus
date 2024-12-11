@@ -5,8 +5,8 @@
 
 #include <windows.h>
 #include <stdexcept>
+#include <vector>
 #include <string>
-#include <memory>
 
 #ifndef SHELLCODE_MODE
     #pragma message("usual mode")
@@ -42,80 +42,65 @@
 
 #include "PELoader.h"
 
-_inline void *my_memcpy(void *dst, const void *src, size_t n)
+void* my_memcpy(void* dst, const void* src, size_t n)
 {
-    size_t i;
-    for (i = 0; i < n; i++)
-        ((unsigned char*)dst)[i] = ((unsigned char*)src)[i];
-    return dst;
+    return std::memcpy(dst, src, n);
 }
 
 // simple lstrcpy() replacement
-_inline void my_lstrcpy(PCHAR pDest, PCHAR pSrc)
+void my_lstrcpy(PCHAR pDest, PCHAR pSrc)
 {
-    BYTE *pbSrc = (BYTE *)pSrc;
-    BYTE *pbDst = (BYTE *)pDest;
-
-    while (*pbSrc) { *pbDst = *pbSrc; pbSrc++; pbDst++; }
+    while (*pSrc) { *pDest++ = *pSrc++; }
 }
 
-_inline SIZE_T PeSupAlign(SIZE_T Size, SIZE_T Alignment)
+SIZE_T PeSupAlign(SIZE_T Size, SIZE_T Alignment)
 {
-    SIZE_T AlignedSize = Size & ~(Alignment-1);
-
-    if (Size != AlignedSize)
-        AlignedSize += Alignment;
-
-    return(AlignedSize);
+    return (Size + Alignment - 1) & ~(Alignment - 1);
 }
 
 BOOL LoaderProcessRelocs(LPVOID NewBase, PIMAGE_NT_HEADERS Pe)
 {
-    DWORD i;
-    PIMAGE_DATA_DIRECTORY DataDir;
-    LONG RelocSize;
+    try {
+        DWORD i;
+        PIMAGE_DATA_DIRECTORY DataDir = PeSupGetDirectoryEntryPtr(Pe, IMAGE_DIRECTORY_ENTRY_BASERELOC);
+        if (DataDir->VirtualAddress && DataDir->Size) {
+            ULONG_PTR BaseDelta = ((ULONG_PTR)NewBase - (ULONG_PTR)PeSupGetOptionalField(Pe, ImageBase));
+            PIMAGE_BASE_RELOCATION_EX Reloc = (PIMAGE_BASE_RELOCATION_EX)((SIZE_T)NewBase + DataDir->VirtualAddress);
 
-    DataDir = PeSupGetDirectoryEntryPtr(Pe, IMAGE_DIRECTORY_ENTRY_BASERELOC);
-    if (DataDir->VirtualAddress && (RelocSize = DataDir->Size))
-    {
-        ULONG_PTR BaseDelta = ((ULONG_PTR)NewBase - (ULONG_PTR)PeSupGetOptionalField(Pe, ImageBase));
-        PIMAGE_BASE_RELOCATION_EX Reloc = (PIMAGE_BASE_RELOCATION_EX)((SIZE_T)NewBase + DataDir->VirtualAddress);    // DWORD -> SIZE_T
+            while (DataDir->Size > IMAGE_SIZEOF_BASE_RELOCATION) {
+                ULONG NumberRelocs = (Reloc->SizeOfBlock - IMAGE_SIZEOF_BASE_RELOCATION) / sizeof(WORD);
+                PCHAR PageVa = (PCHAR)((SIZE_T)NewBase + Reloc->VirtualAddress);
 
-        while (RelocSize > IMAGE_SIZEOF_BASE_RELOCATION)
-        {
-            ULONG NumberRelocs = (Reloc->SizeOfBlock - IMAGE_SIZEOF_BASE_RELOCATION) / sizeof(WORD);
-            PCHAR PageVa = (PCHAR)((SIZE_T)NewBase + Reloc->VirtualAddress);    // DWORD -> SIZE_T
+                if (DataDir->Size >= (LONG)Reloc->SizeOfBlock) {
+                    for (i = 0; i < NumberRelocs; i++) {
+                        USHORT RelocType = (Reloc->TypeOffset[i] >> IMAGE_REL_BASED_SHIFT);
 
-            if (RelocSize >= (LONG)Reloc->SizeOfBlock)
-            {
-                for (i = 0; i < NumberRelocs; i++)
-                {
-                    USHORT RelocType = (Reloc->TypeOffset[i] >> IMAGE_REL_BASED_SHIFT);
-
-                    switch (RelocType)
-                    {
-                    case IMAGE_REL_BASED_ABSOLUTE:
-                        // Do nothing. This one is used just for alignment.
-                        break;
-                    case IMAGE_REL_BASED_HIGHLOW:
-                        *(PULONG)(PageVa + (Reloc->TypeOffset[i] & IMAGE_REL_BASED_MASK)) += (ULONG)BaseDelta;
-                        break;
+                        switch (RelocType) {
+                        case IMAGE_REL_BASED_ABSOLUTE:
+                            // Do nothing. This one is used just for alignment.
+                            break;
+                        case IMAGE_REL_BASED_HIGHLOW:
+                            *(PULONG)(PageVa + (Reloc->TypeOffset[i] & IMAGE_REL_BASED_MASK)) += (ULONG)BaseDelta;
+                            break;
 #ifdef _M_AMD64
-                    case IMAGE_REL_BASED_DIR64:
-                        *(PULONG_PTR)(PageVa + (Reloc->TypeOffset[i] & IMAGE_REL_BASED_MASK)) += BaseDelta;
-                        break;
+                        case IMAGE_REL_BASED_DIR64:
+                            *(PULONG_PTR)(PageVa + (Reloc->TypeOffset[i] & IMAGE_REL_BASED_MASK)) += BaseDelta;
+                            break;
 #endif
-                    default:
-                        throw std::runtime_error("Unsupported relocation type");
-                    }    // switch(RelocType)
-                }    // for (i=0; i<NumberRelocs; i++)
-            }    // if (RelocSize >= (LONG)Reloc->SizeOfBlock)
-            RelocSize -= (LONG)Reloc->SizeOfBlock;
-            Reloc = (PIMAGE_BASE_RELOCATION_EX)((PCHAR)Reloc + Reloc->SizeOfBlock);
-        }    // while(RelocSize > IMAGE_SIZEOF_BASE_RELOCATION)
-    }    // if (!ImageAtBase && DataDir->VirtualAddress && (RelocSize = DataDir->Size)
-
-    return TRUE;
+                        default:
+                            throw std::runtime_error("Unsupported relocation type");
+                        }
+                    }
+                }
+                DataDir->Size -= (LONG)Reloc->SizeOfBlock;
+                Reloc = (PIMAGE_BASE_RELOCATION_EX)((PCHAR)Reloc + Reloc->SizeOfBlock);
+            }
+        }
+        return TRUE;
+    } catch (const std::exception& e) {
+        DbgPrint("ERR: %s", e.what());
+        return FALSE;
+    }
 }
 
 #if (!defined(_M_X64))
@@ -132,77 +117,46 @@ BOOL LoaderProcessImports(LPVOID NewBase, PIMAGE_NT_HEADERS Pe)
 BOOL LoaderProcessImports(SHELLCODE_APIS *pAPIs, LPVOID NewBase, PIMAGE_NT_HEADERS Pe)
 #endif
 {
-    PIMAGE_IMPORT_DESCRIPTOR pImportDescriptor = NULL;   
-    PIMAGE_IMPORT_BY_NAME pImageImportByName = NULL; 
+    try {
+        PIMAGE_IMPORT_DESCRIPTOR pImportDescriptor = (PIMAGE_IMPORT_DESCRIPTOR)((SIZE_T)PeSupGetDirectoryEntryPtr(Pe, IMAGE_DIRECTORY_ENTRY_IMPORT)->VirtualAddress);
+        if (pImportDescriptor != NULL) {
+            pImportDescriptor = (PIMAGE_IMPORT_DESCRIPTOR)((SIZE_T)NewBase + (SIZE_T)pImportDescriptor);
+            while (pImportDescriptor->Name != 0) {
+                PCHAR ModuleName = (PCHAR)((SIZE_T)NewBase + (SIZE_T)pImportDescriptor->Name);
+                PVOID ModuleBase = LoadLibraryA_(ModuleName);
+                if (ModuleBase == NULL) {
+                    throw std::runtime_error("Required module not loaded");
+                }
 
-    PIMAGE_THUNK_DATA_XXX pFirstThunkData = NULL;   
-    PIMAGE_THUNK_DATA_XXX pOriginalThunkData = NULL;  
+                PIMAGE_THUNK_DATA_XXX pFirstThunkData = (PIMAGE_THUNK_DATA_XXX)((SIZE_T)NewBase + (SIZE_T)(pImportDescriptor->FirstThunk));
+                PIMAGE_THUNK_DATA_XXX pOriginalThunkData = (PIMAGE_THUNK_DATA_XXX)((SIZE_T)NewBase + (SIZE_T)(pImportDescriptor->OriginalFirstThunk));
 
-    PCHAR ModuleName;
-    PVOID ModuleBase;
-    PCHAR FuncName;
-    LPVOID FuncAddr;
+                while (pOriginalThunkData->u1.Ordinal != 0) {
+                    PCHAR FuncName;
+                    if (!(pOriginalThunkData->u1.Ordinal & IMAGE_ORDINAL_FLAGXX)) {
+                        PIMAGE_IMPORT_BY_NAME pImageImportByName = (PIMAGE_IMPORT_BY_NAME)RVATOVA(NewBase, pOriginalThunkData->u1.AddressOfData);
+                        FuncName = (PCHAR)(&pImageImportByName->Name);
+                    } else {
+                        FuncName = (PCHAR)((SIZE_T)pOriginalThunkData->u1.Ordinal & 0x0000FFFF);
+                    }
 
-    pImportDescriptor = (PIMAGE_IMPORT_DESCRIPTOR)((SIZE_T)PeSupGetDirectoryEntryPtr(Pe, IMAGE_DIRECTORY_ENTRY_IMPORT)->VirtualAddress);
-    if (pImportDescriptor != NULL)    
-    {   
-        pImportDescriptor = (PIMAGE_IMPORT_DESCRIPTOR)((SIZE_T)NewBase + (SIZE_T)pImportDescriptor);
-        while (pImportDescriptor->Name != 0)   
-        {       
-            ModuleName = (PCHAR)((SIZE_T)NewBase + (SIZE_T)pImportDescriptor->Name);
-            //DbgPrint("ModuleName: %s", ModuleName); 
-            
-            // dbg chk
-            //if (OutputDebugStringA_) { OutputDebugStringA_(ModuleName); }    // dbg
-            //if (!ModuleName) { do {} while (TRUE); }
-            
+                    LPVOID FuncAddr = GetProcAddress_((HMODULE)ModuleBase, FuncName);
+                    if (FuncAddr == 0) {
+                        throw std::runtime_error("Required function not found");
+                    }
 
-            ModuleBase = LoadLibraryA_(ModuleName);   
-            if (ModuleBase == NULL)   
-            {
-                // Required dll not loaded. So error occurred.
-                throw std::runtime_error("Required module not loaded: " + std::string(ModuleName));
+                    *(LPVOID *)pFirstThunkData = FuncAddr;
+                    pOriginalThunkData++;
+                    pFirstThunkData++;
+                }
+                pImportDescriptor++;
             }
-             
-            //DbgPrint( "0x%.8x:%s", ModuleBase, ModuleName );   
-
-            pFirstThunkData = (PIMAGE_THUNK_DATA_XXX)((SIZE_T)NewBase + (SIZE_T)(pImportDescriptor->FirstThunk));
-            pOriginalThunkData = (PIMAGE_THUNK_DATA_XXX)((SIZE_T)NewBase + (SIZE_T)(pImportDescriptor->OriginalFirstThunk));
-
-            while (pOriginalThunkData->u1.Ordinal != 0)   
-            {  
-                // check for name or ordinal
-                if (!(pOriginalThunkData->u1.Ordinal & IMAGE_ORDINAL_FLAGXX)) {
-                    // name
-                    pImageImportByName = (PIMAGE_IMPORT_BY_NAME)RVATOVA(NewBase, pOriginalThunkData->u1.AddressOfData);   
-                    FuncName = (PCHAR)(&pImageImportByName->Name);   
-                } else {
-                    // ordinal
-                    FuncName = (PCHAR)((SIZE_T)pOriginalThunkData->u1.Ordinal & 0x0000FFFF);
-                }
-    
-                //if (OutputDebugStringA_) { OutputDebugStringA_(FuncName); }    // dbg
-                FuncAddr = GetProcAddress_((HMODULE)ModuleBase, FuncName);
-
-                //DbgPrint("0x%.8x:%s", FuncAddr, FuncName);   
-
-                if (FuncAddr == 0)   
-                {
-                    // Required function not found. So error occurred.
-                    throw std::runtime_error("Required function not found: " + std::string(FuncName));
-                }
-
-                // ULONG* was, SIZE_T tried
-                *(LPVOID *)pFirstThunkData = FuncAddr;
-
-                pOriginalThunkData++;   
-                pFirstThunkData++;   
-            }   
-
-            pImportDescriptor++;   
-        }   
+        }
+        return TRUE;
+    } catch (const std::exception& e) {
+        DbgPrint("ERR: %s", e.what());
+        return FALSE;
     }
-    return TRUE;
 }
 
 /*
@@ -214,37 +168,30 @@ BOOL LoaderProcessImports(SHELLCODE_APIS *pAPIs, LPVOID NewBase, PIMAGE_NT_HEADE
     NB: it is up to caller to execute module's entrypoint with essential params!
 */
 #ifndef SHELLCODE_MODE
-BOOL PELoad(LPVOID pPE, LPVOID *pImage, SIZE_T *lImageSize, LPVOID *pEntryPoint)
+BOOL PELoad(LPVOID pPE, LPVOID *pImage, SIZE_T *lImageSize, LPVOID *pEntryPoint )
 #else
-BOOL PELoad(SHELLCODE_APIS *pAPIs, LPVOID pPE, LPVOID *pImage, SIZE_T *lImageSize, LPVOID *pEntryPoint)
+BOOL PELoad(SHELLCODE_APIS *pAPIs, LPVOID pPE, LPVOID *pImage, SIZE_T *lImageSize, LPVOID *pEntryPoint )
 #endif
 {
-    BOOL bRes = FALSE;    // initial func result
-
-    SIZE_T i, NumberSections, FileAlign, bSize;
-    PIMAGE_NT_HEADERS Pe = (PIMAGE_NT_HEADERS)PeSupGetImagePeHeader((SIZE_T)pPE);
-    PIMAGE_SECTION_HEADER Section = IMAGE_FIRST_SECTION(Pe);
-
-    if ((!pPE) || (!pImage) || (!lImageSize) || (!pEntryPoint)) {
-        DbgPrint("WARN: input params validation failed");
-        return bRes;
-    }
-
     try {
+        if (!pPE || !pImage || !lImageSize || !pEntryPoint) {
+            throw std::invalid_argument("Invalid input parameters");
+        }
+
+        PIMAGE_NT_HEADERS Pe = (PIMAGE_NT_HEADERS)PeSupGetImagePeHeader((SIZE_T)pPE);
         *lImageSize = PeSupGetOptionalField(Pe, SizeOfImage);
         *pImage = (PCHAR)VirtualAlloc_(0, *lImageSize, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
 
-        NumberSections = Pe->FileHeader.NumberOfSections;
-        FileAlign = PeSupGetOptionalField(Pe, FileAlignment);
+        SIZE_T NumberSections = Pe->FileHeader.NumberOfSections;
+        SIZE_T FileAlign = PeSupGetOptionalField(Pe, FileAlignment);
+        PIMAGE_SECTION_HEADER Section = IMAGE_FIRST_SECTION(Pe);
 
         my_memcpy(*pImage, pPE, PeSupGetOptionalField(Pe, SizeOfHeaders));
 
         // Copying sections
-        for (i = 0; i < NumberSections; i++)
-        {
-            bSize = PeSupAlign(Section->SizeOfRawData, FileAlign);
-            if (bSize)
-            {
+        for (SIZE_T i = 0; i < NumberSections; i++) {
+            SIZE_T bSize = PeSupAlign(Section->SizeOfRawData, FileAlign);
+            if (bSize) {
                 my_memcpy((LPVOID)((SIZE_T)*pImage + Section->VirtualAddress), (LPVOID)((SIZE_T)pPE + Section->PointerToRawData), bSize);
             }
             Section += 1;
@@ -252,26 +199,21 @@ BOOL PELoad(SHELLCODE_APIS *pAPIs, LPVOID pPE, LPVOID *pImage, SIZE_T *lImageSiz
 
         // Processing relocs and imports
 #ifndef SHELLCODE_MODE
-        if (!LoaderProcessRelocs(*pImage, Pe) || !LoaderProcessImports(*pImage, Pe))
+        if (!LoaderProcessRelocs(*pImage, Pe) || !LoaderProcessImports(*pImage, Pe)) {
 #else
-        if (!LoaderProcessRelocs(*pImage, Pe) || !LoaderProcessImports(pAPIs, *pImage, Pe))
+        if (!LoaderProcessRelocs(*pImage, Pe) || !LoaderProcessImports(pAPIs, *pImage, Pe)) {
 #endif
-        {
-            DbgPrint("failure during relocs or imports processing");
-            VirtualFree_(*pImage, 0, MEM_RELEASE);
-            return bRes;
+            throw std::runtime_error("Failure during relocs or imports processing");
         }
 
         *pEntryPoint = (LPVOID)((SIZE_T)*pImage + PeSupGetOptionalField(Pe, AddressOfEntryPoint));
         DbgPrint("EP is found at %04Xh", *pEntryPoint);
-        bRes = TRUE;
-    }
-    catch (const std::exception& e) {
-        DbgPrint("Exception: %s", e.what());
+        return TRUE;
+    } catch (const std::exception& e) {
+        DbgPrint("ERR: %s", e.what());
         if (*pImage) {
             VirtualFree_(*pImage, 0, MEM_RELEASE);
         }
+        return FALSE;
     }
-
-    return bRes;
 }

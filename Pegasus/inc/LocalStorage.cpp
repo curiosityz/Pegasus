@@ -4,10 +4,10 @@
 */
 
 #include <windows.h>
-#include <stdexcept>
 #include <string>
 #include <vector>
-#include <mutex>
+#include <fstream>
+#include <iostream>
 
 #include "mem.h"
 #include "dbg.h"
@@ -16,11 +16,7 @@
 
 #include "LocalStorage.h"
 
-// Global mutex for thread safety
-std::mutex g_localStorageMutex;
-
-// Vector to store local storage items
-std::vector<LOCAL_STORAGE_ITEM> g_localStorageItems;
+std::vector<std::string> localStorage;
 
 /*
 	Performs initialization of persistent local storage
@@ -29,80 +25,72 @@ VOID lsInitLocalStorage()
 {
 	DbgPrint("entered");
 
+	// Initialize local storage
+	localStorage.clear();
+}
+
+/*
+	Adds a chunk of information to the local storage
+*/
+VOID lsAddToLocalStorage(const std::string& data)
+{
+	DbgPrint("entered");
+
 	try {
-		// Initialization code here
+		localStorage.push_back(data);
 	}
 	catch (const std::exception& e) {
 		DbgPrint("Exception: %s", e.what());
-		throw;
 	}
 }
 
 /*
-	Adds an item to the local storage
+	Saves the local storage to a file
 */
-VOID lsAddItem(StorageItemSourceEnum siSource, DWORD dwItemUniqId, LPVOID pData, SIZE_T lDataLen)
+VOID lsSaveLocalStorageToFile(const std::string& fileName)
 {
-	std::lock_guard<std::mutex> lock(g_localStorageMutex);
+	DbgPrint("entered");
 
 	try {
-		LOCAL_STORAGE_ITEM newItem;
-		newItem.siSource = siSource;
-		newItem.dwItemUniqId = dwItemUniqId;
-		newItem.pData = my_alloc(lDataLen);
-		memcpy(newItem.pData, pData, lDataLen);
-		newItem.lDataLen = lDataLen;
-
-		g_localStorageItems.push_back(newItem);
-	}
-	catch (const std::exception& e) {
-		DbgPrint("Exception: %s", e.what());
-		throw;
-	}
-}
-
-/*
-	Removes an item from the local storage by unique ID
-*/
-VOID lsRemoveItem(DWORD dwItemUniqId)
-{
-	std::lock_guard<std::mutex> lock(g_localStorageMutex);
-
-	try {
-		auto it = std::remove_if(g_localStorageItems.begin(), g_localStorageItems.end(),
-			[dwItemUniqId](const LOCAL_STORAGE_ITEM& item) {
-				return item.dwItemUniqId == dwItemUniqId;
-			});
-
-		if (it != g_localStorageItems.end()) {
-			my_free(it->pData);
-			g_localStorageItems.erase(it, g_localStorageItems.end());
+		std::ofstream outFile(fileName, std::ios::out | std::ios::binary);
+		if (!outFile) {
+			throw std::ios_base::failure("Failed to open file for writing");
 		}
+
+		for (const auto& data : localStorage) {
+			outFile.write(data.c_str(), data.size());
+			outFile.put('\n');
+		}
+
+		outFile.close();
 	}
 	catch (const std::exception& e) {
 		DbgPrint("Exception: %s", e.what());
-		throw;
 	}
 }
 
 /*
-	Gets an item from the local storage by unique ID
+	Loads the local storage from a file
 */
-LOCAL_STORAGE_ITEM* lsGetItem(DWORD dwItemUniqId)
+VOID lsLoadLocalStorageFromFile(const std::string& fileName)
 {
-	std::lock_guard<std::mutex> lock(g_localStorageMutex);
+	DbgPrint("entered");
 
 	try {
-		for (auto& item : g_localStorageItems) {
-			if (item.dwItemUniqId == dwItemUniqId) {
-				return &item;
-			}
+		std::ifstream inFile(fileName, std::ios::in | std::ios::binary);
+		if (!inFile) {
+			throw std::ios_base::failure("Failed to open file for reading");
 		}
+
+		localStorage.clear();
+		std::string line;
+		while (std::getline(inFile, line)) {
+			localStorage.push_back(line);
+		}
+
+		inFile.close();
 	}
 	catch (const std::exception& e) {
 		DbgPrint("Exception: %s", e.what());
-		throw;
 	}
-
-	return nullptr;
 }

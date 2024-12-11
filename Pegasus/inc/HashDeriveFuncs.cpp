@@ -5,9 +5,7 @@
 */
 
 #include <Windows.h>
-#include <string>
-#include <vector>
-#include <stdexcept>
+#include <stdexcept> // for std::runtime_error
 
 #include "dbg.h"
 #include "mem.h"
@@ -26,36 +24,46 @@ LPWSTR g_wszLocalMachineName = NULL;
 UINT64 i64CalcTargetMachineHash(LPWSTR wszTargetMachineName)
 {
 	DWORD dwLen;	// tmp len var
-	std::wstring wszResBuff;
+	LPWSTR wszResBuff, wszS;
 	UINT64 i64Res = 0;	// func result
 
-	try {
+	try {	// not a loop
+
 		// directly hash if used passed param
 		if (wszTargetMachineName) { 
 			i64Res = HashStringW_const(wszTargetMachineName); 
-			return i64Res; 
-		}
+		} else {
+			// need to query local machine's name
+			if (!g_wszLocalMachineName) {
+				g_wszLocalMachineName = (LPWSTR)my_alloc(1024);
+				if (!g_wszLocalMachineName) {
+					throw std::runtime_error("Memory allocation failed for g_wszLocalMachineName");
+				}
+				dwLen = MAX_COMPUTERNAME_LENGTH + 1;
+				if (!GetComputerName(g_wszLocalMachineName, &dwLen)) {
+					throw std::runtime_error("Failed to get computer name");
+				}
+			} // !g_wszLocalMachineName
 
-		// need to query local machine's name
-		if (!g_wszLocalMachineName) {
-			g_wszLocalMachineName = (LPWSTR)my_alloc(1024);
-			dwLen = MAX_COMPUTERNAME_LENGTH + 1;
-			if (!GetComputerName(g_wszLocalMachineName, &dwLen)) {
-				throw std::runtime_error("Failed to get computer name");
+			// form resulting buffer
+			wszResBuff = (LPWSTR)my_alloc(1024);
+			if (!wszResBuff) {
+				throw std::runtime_error("Memory allocation failed for wszResBuff");
 			}
+			wszS = CRSTRW("\\\\", "\x00\x20\xdc\x0d\x02\x20\xe0\x39\xd8\xa4\xd2");
+			lstrcat(wszResBuff, wszS);
+			lstrcat(wszResBuff, g_wszLocalMachineName);
+			my_free(wszS);
+
+			// calc hash
+			i64Res = HashStringW_const(wszResBuff);
+			DbgPrint("formatted local machine name [%ws], hash %08X%08X", wszResBuff, (DWORD)(i64Res << 32), (DWORD)i64Res);
+			my_free(wszResBuff);
 		}
-
-		// form resulting buffer
-		wszResBuff = L"\\\\";
-		wszResBuff += g_wszLocalMachineName;
-
-		// calc hash
-		i64Res = HashStringW_const(wszResBuff.c_str());
-		DbgPrint("formatted local machine name [%ws], hash %08X%08X", wszResBuff.c_str(), (DWORD)(i64Res << 32), (DWORD)i64Res);
 
 	} catch (const std::exception& e) {
 		DbgPrint("Exception: %s", e.what());
-		throw;
+		i64Res = 0; // or some other error value
 	}
 
 	return i64Res;

